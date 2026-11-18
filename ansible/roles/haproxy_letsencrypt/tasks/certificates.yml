@@ -1,0 +1,77 @@
+---
+- name: Create the HAProxy certificate directory
+  ansible.builtin.file:
+    path: "{{ haproxy_letsencrypt_cert_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# "crt /etc/haproxy/certs/" needs at least one certificate before HAProxy can
+# start and answer the first HTTP-01 challenge. A self-signed placeholder fills
+# that gap and is removed once a real certificate is in place.
+- name: Look for certificates in the HAProxy certificate directory
+  ansible.builtin.find:
+    paths: "{{ haproxy_letsencrypt_cert_dir }}"
+    patterns: "*.pem"
+    excludes: "_bootstrap.pem"
+  register: haproxy_letsencrypt_existing
+
+- name: Create a temporary self-signed certificate
+  ansible.builtin.shell:
+    cmd: >-
+      openssl req -x509 -newkey rsa:2048 -nodes -days 7 -subj "/CN=bootstrap.invalid"
+      -keyout /root/_bootstrap.key -out /root/_bootstrap.crt
+      && cat /root/_bootstrap.crt /root/_bootstrap.key > {{ haproxy_letsencrypt_cert_dir }}/_bootstrap.pem
+      && chmod 600 {{ haproxy_letsencrypt_cert_dir }}/_bootstrap.pem
+      && rm -f /root/_bootstrap.crt /root/_bootstrap.key
+    creates: "{{ haproxy_letsencrypt_cert_dir }}/_bootstrap.pem"
+  when: haproxy_letsencrypt_existing.matched == 0
+
+- name: Deploy /etc/haproxy/haproxy.cfg
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    owner: root
+    group: root
+    mode: "0644"
+    validate: haproxy -c -f %s
+  notify: Reload haproxy
+
+- name: Enable and start HAProxy
+  ansible.builtin.systemd_service:
+    name: haproxy
+    enabled: true
+    state: started
+
+- name: Apply a changed HAProxy configuration before requesting certificates
+  ansible.builtin.meta: flush_handlers
+
+- name: Request the certificates (HTTP-01 through HAProxy, webroot)
+  ansible.builtin.command:
+    cmd: >-
+      certbot certonly --webroot -w {{ haproxy_letsencrypt_webroot }}
+      --cert-name {{ item.name }} -d {{ item.domains | join(' -d ') }}
+      --email {{ haproxy_letsencrypt_email }} --agree-tos --non-interactive
+      --deploy-hook {{ haproxy_letsencrypt_deploy_hook }}
+      {{ ('--server ' ~ haproxy_letsencrypt_acme_server) if haproxy_letsencrypt_acme_server | length > 0 else '' }}
+    creates: /etc/letsencrypt/live/{{ item.name }}/fullchain.pem
+  loop: "{{ haproxy_letsencrypt_certificates }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# The deploy hook writes <name>.pem on the first request as well
+- name: Check that HAProxy has every certificate
+  ansible.builtin.stat:
+    path: "{{ haproxy_letsencrypt_cert_dir }}/{{ item.name }}.pem"
+  loop: "{{ haproxy_letsencrypt_certificates }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: haproxy_letsencrypt_pems
+  failed_when: not haproxy_letsencrypt_pems.stat.exists
+
+- name: Remove the temporary self-signed certificate
+  ansible.builtin.file:
+    path: "{{ haproxy_letsencrypt_cert_dir }}/_bootstrap.pem"
+    state: absent
+  notify: Reload haproxy

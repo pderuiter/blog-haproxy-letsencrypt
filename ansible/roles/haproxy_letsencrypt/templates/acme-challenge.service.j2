@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+[Unit]
+Description=ACME Challenge Server
+After=network.target
+
+[Service]
+Type=simple
+User={{ _haproxy_letsencrypt_web_user }}
+WorkingDirectory={{ haproxy_letsencrypt_webroot }}
+ExecStart=/usr/bin/python3 -m http.server {{ haproxy_letsencrypt_acme_port }}
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

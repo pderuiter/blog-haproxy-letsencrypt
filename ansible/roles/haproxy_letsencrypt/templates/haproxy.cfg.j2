@@ -1,0 +1,108 @@
+# {{ ansible_managed }}
+# /etc/haproxy/haproxy.cfg
+
+global
+    log /dev/log local0
+    log /dev/log local1 notice
+    chroot /var/lib/haproxy
+    stats socket /run/haproxy/admin.sock mode 660 level admin expose-fd listeners
+    stats timeout 30s
+    user haproxy
+    group haproxy
+    daemon
+
+    maxconn 50000
+    nbthread 4
+
+    # Modern SSL settings
+    ssl-default-bind-ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305
+    ssl-default-bind-ciphersuites TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256
+    ssl-default-bind-options ssl-min-ver TLSv1.2 no-tls-tickets
+    ssl-default-server-ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384
+    ssl-default-server-options ssl-min-ver TLSv1.2 no-tls-tickets
+    tune.ssl.default-dh-param 2048
+
+defaults
+    log global
+    mode http
+    option httplog
+    option dontlognull
+    option forwardfor
+    option http-server-close
+    timeout connect 5s
+    timeout client  50s
+    timeout server  50s
+    timeout http-request 10s
+    timeout http-keep-alive 10s
+
+# Stats
+listen stats
+    bind *:8404
+    stats enable
+    stats uri /stats
+    stats refresh 10s
+    stats auth {{ haproxy_letsencrypt_stats_user }}:{{ haproxy_letsencrypt_stats_password }}
+    http-request use-service prometheus-exporter if { path /metrics }
+
+# HTTP Frontend
+frontend http_frontend
+    bind *:80
+
+    # ACME challenges
+    acl is_acme path_beg /.well-known/acme-challenge/
+    use_backend acme_backend if is_acme
+
+    # Redirect to HTTPS with 301
+    http-request redirect scheme https code 301 unless is_acme
+
+# HTTPS Frontend
+frontend https_frontend
+    bind *:443 ssl crt {{ haproxy_letsencrypt_cert_dir }}/ strict-sni alpn h2,http/1.1
+
+    # Security headers
+    http-response set-header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+    http-response set-header X-Content-Type-Options "nosniff"
+    http-response set-header X-Frame-Options "SAMEORIGIN"
+    http-response set-header X-XSS-Protection "1; mode=block"
+
+    # Log SSL info
+    http-request capture req.hdr(Host) len 50
+    http-request set-header X-Forwarded-Proto https
+    http-request set-header X-SSL-Client-Verify %[ssl_c_verify]
+    http-request set-header X-SSL-Client-DN %{+Q}[ssl_c_s_dn]
+
+    # Route based on host
+    use_backend api_servers if { hdr(host) -i {{ haproxy_letsencrypt_api_host }} }
+    use_backend app_servers if { hdr(host) -i {{ haproxy_letsencrypt_app_host }} }
+    default_backend web_servers
+
+# ACME challenge backend
+backend acme_backend
+    server acme 127.0.0.1:{{ haproxy_letsencrypt_acme_port }}
+
+# Web servers
+backend web_servers
+    balance roundrobin
+    option httpchk GET /health
+    http-check expect status 200
+{% for s in haproxy_letsencrypt_web_servers %}
+    server {{ s.name }} {{ s.address }}:{{ s.port }} check inter 5s
+{% endfor %}
+
+# API servers
+backend api_servers
+    balance leastconn
+    option httpchk GET /api/health
+    http-check expect status 200
+{% for s in haproxy_letsencrypt_api_servers %}
+    server {{ s.name }} {{ s.address }}:{{ s.port }} check inter 5s
+{% endfor %}
+
+# App servers
+backend app_servers
+    balance roundrobin
+    option httpchk GET /health
+    cookie SERVERID insert indirect nocache
+{% for s in haproxy_letsencrypt_app_servers %}
+    server {{ s.name }} {{ s.address }}:{{ s.port }} check cookie {{ s.name }}
+{% endfor %}

@@ -1,0 +1,6 @@
+---
+# Copy to vault.yml, set real values and encrypt it:
+#   ansible-vault encrypt group_vars/all/vault.yml
+#
+# Password of the stats page (user admin; the post uses "changeme")
+vault_haproxy_letsencrypt_stats_password: "change-me-stats-password"

@@ -1,0 +1,3 @@
+---
+# RHEL has no www-data user; the challenge server only needs read access
+_haproxy_letsencrypt_web_user: nobody

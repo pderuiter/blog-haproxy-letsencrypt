@@ -1,0 +1,191 @@
+---
+# Functional checks from the post ("Testing and Verification"). Run after
+#   ansible-playbook site.yml -e @../tests/demo-vars.yml
+# from the ansible/ directory:
+#   ansible-playbook ../tests/verify.yml -e @../tests/demo-vars.yml
+# verify_renewal: true also forces a renewal of one certificate and checks that
+# the deploy hook swapped it through the runtime API (this asks the CA for a
+# new certificate; use it against staging or a test CA).
+- name: Verify HAProxy with Let's Encrypt
+  hosts: haproxy
+  gather_facts: false
+  become: true
+  vars:
+    verify_renewal: false
+  tasks:
+    # Your values (group_vars, -e) win; the role defaults fill in the rest
+    - name: Read the role defaults
+      ansible.builtin.include_vars:
+        file: ../ansible/roles/haproxy_letsencrypt/defaults/main.yml
+        name: verify_defaults
+
+    - name: Merge them with the inventory values
+      ansible.builtin.set_fact:
+        verify_le: "{{ verify_le | default({}) | combine({item: lookup('ansible.builtin.vars', item, default=verify_defaults[item])}) }}"
+      loop: "{{ verify_defaults.keys() | list }}"
+      no_log: true
+
+    - name: List the names to check
+      ansible.builtin.set_fact:
+        verify_names: "{{ verify_le.haproxy_letsencrypt_certificates | map(attribute='domains') | flatten }}"
+
+    - name: Validate the configuration (haproxy -c)
+      ansible.builtin.command: haproxy -c -f /etc/haproxy/haproxy.cfg
+      changed_when: false
+
+    - name: List the certificates (certbot certificates)
+      ansible.builtin.command: certbot certificates
+      register: verify_certbot
+      changed_when: false
+
+    - name: The temporary self-signed certificate is gone
+      ansible.builtin.stat:
+        path: /etc/haproxy/certs/_bootstrap.pem
+      register: verify_bootstrap
+      failed_when: verify_bootstrap.stat.exists
+
+    - name: HAProxy serves the right certificate for every name (SNI)
+      ansible.builtin.shell: |
+        set -o pipefail
+        openssl s_client -connect 127.0.0.1:443 -servername {{ item }} </dev/null 2>/dev/null \
+          | openssl x509 -noout -ext subjectAltName
+      args:
+        executable: /bin/bash
+      loop: "{{ verify_names }}"
+      register: verify_sni
+      changed_when: false
+      failed_when: verify_sni.stdout is not search('DNS:' ~ (item | regex_escape) ~ '(,|$)')
+
+    - name: An unknown name gets no certificate (strict-sni)
+      ansible.builtin.shell: |
+        openssl s_client -connect 127.0.0.1:443 -servername unknown.invalid </dev/null 2>&1
+      args:
+        executable: /bin/bash
+      register: verify_strict
+      changed_when: false
+      failed_when: verify_strict.stdout is search('BEGIN CERTIFICATE')
+
+    - name: HTTP is redirected to HTTPS
+      ansible.builtin.uri:
+        url: http://127.0.0.1/
+        headers:
+          Host: "{{ verify_names[0] }}"
+        follow_redirects: none
+        status_code: 301
+      register: verify_redirect
+      failed_when: verify_redirect.location != 'https://' ~ verify_names[0] ~ '/'
+
+    - name: Put a test file in the challenge directory
+      ansible.builtin.copy:
+        dest: "{{ verify_le.haproxy_letsencrypt_webroot }}/.well-known/acme-challenge/verify-token"
+        content: "verify-token\n"
+        mode: "0644"
+
+    - name: ACME challenges are answered over HTTP (not redirected)
+      ansible.builtin.uri:
+        url: http://127.0.0.1/.well-known/acme-challenge/verify-token
+        headers:
+          Host: "{{ verify_names[0] }}"
+        return_content: true
+      register: verify_acme
+      failed_when: verify_acme.content != 'verify-token\n'
+
+    - name: Remove the test file
+      ansible.builtin.file:
+        path: "{{ verify_le.haproxy_letsencrypt_webroot }}/.well-known/acme-challenge/verify-token"
+        state: absent
+
+    - name: HTTPS with security headers, routed by Host (certificate checked against the system CA store)
+      ansible.builtin.shell: |
+        set -o pipefail
+        python3 - <<'PY'
+        import http.client, json, socket, ssl
+        ctx = ssl.create_default_context()
+        out = {}
+        for host in {{ [verify_names[0], verify_le.haproxy_letsencrypt_api_host, verify_le.haproxy_letsencrypt_app_host] | to_json }}:
+            sock = ctx.wrap_socket(socket.create_connection(("127.0.0.1", 443)), server_hostname=host)
+            conn = http.client.HTTPSConnection(host, context=ctx)
+            conn.sock = sock
+            conn.request("GET", "/", headers={"Host": host})
+            r = conn.getresponse()
+            out[host] = {"hsts": r.getheader("Strict-Transport-Security"), "body": r.read().decode()}
+        print(json.dumps(out))
+        PY
+      args:
+        executable: /bin/bash
+      register: verify_https
+      changed_when: false
+
+    - name: Check headers and routing
+      vars:
+        verify_out: "{{ verify_https.stdout | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - verify_out[verify_names[0]].hsts is search('max-age=63072000')
+          - verify_out[verify_names[0]].body is search('(?i)x-forwarded-proto:\shttps')
+          - verify_out[verify_le.haproxy_letsencrypt_api_host].body is search('served-by:\sdemo-backend-8082')
+          - verify_out[verify_le.haproxy_letsencrypt_app_host].body is search('served-by:\sdemo-backend-8083')
+
+    - name: The stats page needs the password
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8404/stats
+        status_code: 401
+
+    - name: The stats page opens with the password
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8404/stats
+        url_username: "{{ verify_le.haproxy_letsencrypt_stats_user }}"
+        url_password: "{{ verify_le.haproxy_letsencrypt_stats_password }}"
+        force_basic_auth: true
+      no_log: true
+
+    - name: The renewal timer is active
+      ansible.builtin.systemd_service:
+        name: certbot-renewal.timer
+      register: verify_timer
+      failed_when: verify_timer.status.ActiveState != 'active'
+
+    # --dry-run always uses Let's Encrypt staging unless --server is given
+    - name: Renewal dry run (certbot renew --dry-run)
+      ansible.builtin.command: >-
+        certbot renew --dry-run
+        {{ ('--server ' ~ verify_le.haproxy_letsencrypt_acme_server) if verify_le.haproxy_letsencrypt_acme_server | length > 0 else '' }}
+      changed_when: false
+
+    - name: Force a renewal and check the runtime API update
+      when: verify_renewal | bool
+      block:
+        - name: Read the serial HAProxy serves before the renewal
+          ansible.builtin.shell: &verify_serial |
+            set -o pipefail
+            openssl s_client -connect 127.0.0.1:443 -servername {{ verify_le.haproxy_letsencrypt_api_host }} </dev/null 2>/dev/null \
+              | openssl x509 -noout -serial
+          args:
+            executable: /bin/bash
+          register: verify_serial_before
+          changed_when: false
+
+        - name: Renew the api certificate
+          ansible.builtin.command: >-
+            certbot renew --cert-name {{ verify_le.haproxy_letsencrypt_api_host }} --force-renewal --no-random-sleep-on-renew
+            --deploy-hook {{ verify_le.haproxy_letsencrypt_deploy_hook }}
+          changed_when: true
+
+        - name: Read the serial HAProxy serves after the renewal
+          ansible.builtin.shell: *verify_serial
+          args:
+            executable: /bin/bash
+          register: verify_serial_after
+          changed_when: false
+
+        - name: Read the deploy hook log
+          ansible.builtin.command: tail -n 3 /var/log/certbot-haproxy.log
+          register: verify_hook_log
+          changed_when: false
+
+        - name: The new certificate is live without a reload
+          ansible.builtin.assert:
+            that:
+              - verify_serial_after.stdout != verify_serial_before.stdout
+              - verify_hook_log.stdout is search('Updated certificate for ' ~ verify_le.haproxy_letsencrypt_api_host ~ ' via runtime API')
+            fail_msg: "{{ verify_hook_log.stdout }}"

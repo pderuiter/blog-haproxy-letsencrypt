@@ -1,0 +1,9 @@
+---
+- name: HAProxy with Let's Encrypt certificates
+  hosts: haproxy
+  gather_facts: true
+  roles:
+    - role: haproxy_install
+    - role: demo_backend
+      when: demo_backend_enabled | bool
+    - role: haproxy_letsencrypt

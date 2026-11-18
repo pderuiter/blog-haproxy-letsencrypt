@@ -1,0 +1,21 @@
+---
+# HAProxy branch from the official repositories (see roles/haproxy_install):
+# 3.3 from ppa:vbernat/haproxy-3.3 on Ubuntu 24.04, 3.4 LTS on Debian 13,
+# AppStream (2.8) on RHEL 9.
+# haproxy_install_version: "3.3"
+
+# Your domains: every name must point at this host, with port 80 open.
+# haproxy_letsencrypt_certificates:
+#   - {name: example.com, domains: [example.com, www.example.com]}
+#   - {name: api.example.com, domains: [api.example.com]}
+#   - {name: app.example.com, domains: [app.example.com]}
+# haproxy_letsencrypt_email: admin@example.com
+
+# Try it against Let's Encrypt staging first (no rate limits, untrusted certs):
+# haproxy_letsencrypt_acme_server: https://acme-staging-v02.api.letsencrypt.org/directory
+
+# Backend servers: see roles/haproxy_letsencrypt/defaults/main.yml (the post's addresses).
+
+# DEMO: set to true to run three header-echo servers on the HAProxy host; use
+# with tests/demo-vars.yml, which points the backends at them.
+demo_backend_enabled: false

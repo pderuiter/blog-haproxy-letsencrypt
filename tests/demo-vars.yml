@@ -1,0 +1,11 @@
+---
+# Extra vars for a single-VM demo or a lab run:
+#   ansible-playbook site.yml -e @../tests/demo-vars.yml
+# One header-echo server per backend, so you can see where a request went.
+demo_backend_enabled: true
+demo_backend_ports: [8081, 8082, 8083]
+haproxy_letsencrypt_web_servers: [{name: web1, address: 127.0.0.1, port: 8081}]
+haproxy_letsencrypt_api_servers: [{name: api1, address: 127.0.0.1, port: 8082}]
+haproxy_letsencrypt_app_servers: [{name: app1, address: 127.0.0.1, port: 8083}]
+# test-only secret; use vault.yml for a real setup
+vault_haproxy_letsencrypt_stats_password: demo-stats-password

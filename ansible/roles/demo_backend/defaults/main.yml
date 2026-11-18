@@ -1,0 +1,8 @@
+---
+# DEMO ONLY: small HTTP servers that stand in for the post's web/API servers,
+# so you can try the setup on a single VM. They echo the request headers they
+# receive. Replace them with your real servers.
+demo_backend_ports:
+  - 8081
+  - 8082
+demo_backend_bind: 127.0.0.1

@@ -1,0 +1,15 @@
+proxmox_endpoint  = "https://pve.example.com:8006/"
+proxmox_api_token = "terraform@pve!blog=00000000-0000-0000-0000-000000000000"
+proxmox_insecure  = false
+node_name         = "pve"
+vm_datastore_id   = "local-lvm"
+bridge            = "vmbr0"
+gateway           = "203.0.113.1"
+dns_servers       = ["192.0.2.53"]
+ssh_public_key    = "ssh-ed25519 AAAAC3Nza... you@example.com"
+
+# One HAProxy VM. Let's Encrypt must reach it on port 80 (HTTP-01), so give it a
+# public address or forward 80/443 to it.
+vms = {
+  haproxy1 = { ip = "203.0.113.10/24", groups = ["haproxy"], cores = 2, memory = 2048 }
+}
