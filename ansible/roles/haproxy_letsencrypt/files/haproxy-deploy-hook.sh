@@ -1,5 +1,7 @@
 #!/bin/bash
 # /etc/letsencrypt/renewal-hooks/deploy/haproxy.sh
+# certbot renew runs every executable in this directory once per renewed
+# certificate; certonly does not, so pass it there with --deploy-hook.
 
 set -e
 
@@ -19,6 +21,12 @@ update_haproxy_cert() {
     # Combine certificates
     cat "$le_cert/fullchain.pem" "$le_cert/privkey.pem" > "$cert_path"
     chmod 600 "$cert_path"
+    
+    # HAProxy stopped (Method 2's pre-hook): it loads the new file when it starts
+    if ! systemctl is-active --quiet haproxy; then
+        log "HAProxy not running, $domain is loaded at start"
+        return 0
+    fi
     
     # Try runtime update first (HAProxy 2.4+)
     if [ -S "$HAPROXY_SOCKET" ]; then

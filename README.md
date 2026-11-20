@@ -31,9 +31,13 @@ renewal from Method 3.
 - it builds `<name>.pem` from `fullchain.pem` and `privkey.pem`;
 - it updates a loaded certificate through the runtime API (`set ssl cert`, then
   `commit ssl cert` in a separate session), so no reload is needed;
-- it reloads only for a certificate HAProxy has not loaded yet.
+- it reloads only for a certificate HAProxy has not loaded yet;
+- with HAProxy stopped it only writes the file, which HAProxy loads when it starts.
 
-**Renewal:** the post's `certbot-renewal.service` and `.timer`, run twice a day.
+`certbot renew` runs it from that directory, once per renewed certificate, so the timer passes no
+`--deploy-hook`. `certbot certonly` does not run directory hooks, so the first request passes it.
+
+**Renewal:** the post's `certbot-renewal.service` and `.timer`, run twice a day (`certbot renew`).
 
 HAProxy comes from the official repositories:
 - Ubuntu 24.04: `ppa:vbernat/haproxy-3.3`. 3.3 is the newest branch built for 24.04. It is
@@ -115,7 +119,8 @@ Without the real Let's Encrypt (see `tests/lab.sh`):
   - stats auth;
   - the renewal timer;
   - `certbot renew --dry-run`;
-  - a forced renewal that HAProxy picked up through the runtime API without a reload.
+  - a forced `certbot renew` (no `--deploy-hook`): the hook runs exactly once and HAProxy serves the
+    new certificate through the runtime API, without a reload.
 - **CI** (`.gitlab-ci.yml`) runs yamllint, ansible-lint (production profile), `terraform fmt`,
   `validate` and tflint.
 

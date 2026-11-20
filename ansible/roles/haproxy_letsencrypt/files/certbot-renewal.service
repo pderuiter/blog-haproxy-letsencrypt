@@ -4,4 +4,5 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/certbot renew --deploy-hook /etc/letsencrypt/renewal-hooks/deploy/haproxy.sh
+# The deploy hook in /etc/letsencrypt/renewal-hooks/deploy/ runs automatically
+ExecStart=/usr/bin/certbot renew

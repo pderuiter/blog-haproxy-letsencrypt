@@ -165,10 +165,17 @@
           register: verify_serial_before
           changed_when: false
 
+        - name: Empty the deploy hook log
+          ansible.builtin.copy:
+            dest: /var/log/certbot-haproxy.log
+            content: ""
+            mode: "0644"
+
+        # No --deploy-hook: certbot runs the hook from renewal-hooks/deploy/ itself
         - name: Renew the api certificate
           ansible.builtin.command: >-
             certbot renew --cert-name {{ verify_le.haproxy_letsencrypt_api_host }} --force-renewal --no-random-sleep-on-renew
-            --deploy-hook {{ verify_le.haproxy_letsencrypt_deploy_hook }}
+            {{ ('--server ' ~ verify_le.haproxy_letsencrypt_acme_server) if verify_le.haproxy_letsencrypt_acme_server | length > 0 else '' }}
           changed_when: true
 
         - name: Read the serial HAProxy serves after the renewal
@@ -179,7 +186,7 @@
           changed_when: false
 
         - name: Read the deploy hook log
-          ansible.builtin.command: tail -n 3 /var/log/certbot-haproxy.log
+          ansible.builtin.command: cat /var/log/certbot-haproxy.log
           register: verify_hook_log
           changed_when: false
 
@@ -188,4 +195,6 @@
             that:
               - verify_serial_after.stdout != verify_serial_before.stdout
               - verify_hook_log.stdout is search('Updated certificate for ' ~ verify_le.haproxy_letsencrypt_api_host ~ ' via runtime API')
+              # the hook ran exactly once
+              - verify_hook_log.stdout_lines | select('search', 'Processing renewal') | list | length == 1
             fail_msg: "{{ verify_hook_log.stdout }}"

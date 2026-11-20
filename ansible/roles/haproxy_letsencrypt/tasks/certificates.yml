@@ -47,6 +47,9 @@
 - name: Apply a changed HAProxy configuration before requesting certificates
   ansible.builtin.meta: flush_handlers
 
+# certonly does not run the hooks in renewal-hooks/deploy/, so the hook is passed
+# explicitly; certbot renew runs it from that directory (once, also if the path
+# is saved as renew_hook in the renewal configuration).
 - name: Request the certificates (HTTP-01 through HAProxy, webroot)
   ansible.builtin.command:
     cmd: >-
